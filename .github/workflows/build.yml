@@ -1,0 +1,54 @@
+name: Build & Release Android APK/AAB for Myket & GitHub
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew || true
+
+      - name: Setup Environment Variables & Secrets
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MYKET_PUBLIC_KEY: ${{ secrets.MYKET_PUBLIC_KEY }}
+          TAVANA_AUTOMATION_API_KEY: ${{ secrets.TAVANA_AUTOMATION_API_KEY }}
+        run: |
+          echo "GEMINI_API_KEY=${GEMINI_API_KEY}" > .env
+          echo "MYKET_PUBLIC_KEY=${MYKET_PUBLIC_KEY}" >> .env
+          echo "TAVANA_AUTOMATION_API_KEY=${TAVANA_AUTOMATION_API_KEY}" >> .env
+
+      - name: Build Android APK (Debug / Direct Install)
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Build Android App Bundle (AAB for Myket / Play Store)
+        run: ./gradlew bundleRelease --no-daemon || ./gradlew assembleRelease --no-daemon
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tavana-city-apk
+          path: app/build/outputs/apk/**/*.apk
+
+      - name: Upload AAB Bundle Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tavana-city-bundle
+          path: app/build/outputs/bundle/**/*.aab
