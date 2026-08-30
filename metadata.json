@@ -1,0 +1,6 @@
+{
+  "name": "Tavana City AI Router",
+  "description": "Enterprise AI Router and Chat Vault with real-time network detection, fallback orchestration, persona management, message reporting, and Room persistence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
