@@ -1,0 +1,96 @@
+name: Android Build APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Secrets Fallback (.env)
+        run: |
+          # The secrets Gradle plugin requires .env or .env.example
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            echo "Copying .env.example to .env for build environment"
+            cp .env.example .env
+          elif [ ! -f .env ]; then
+            echo "Creating minimal .env for build environment"
+            touch .env
+          fi
+
+      - name: Setup Keystore Fallback
+        run: |
+          # Generate debug.keystore if not present to ensure reproducible APK build
+          if [ ! -f debug.keystore ]; then
+            echo "Generating build debug.keystore"
+            keytool -genkey -v -keystore debug.keystore \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Make gradlew Executable
+        run: chmod +x gradlew
+
+      - name: Build Android APK
+        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Locate and Verify Generated APK
+        id: find_apk
+        run: |
+          echo "Scanning build outputs for generated APK..."
+          APK_FILE=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "::error::No APK found in app/build/outputs/apk/debug!"
+            exit 1
+          fi
+          echo "Found APK: $APK_FILE"
+          APK_NAME=$(basename "$APK_FILE")
+          APK_SIZE=$(stat -c%s "$APK_FILE" 2>/dev/null || stat -f%z "$APK_FILE" 2>/dev/null)
+          APK_SHA256=$(sha256sum "$APK_FILE" | awk '{print $1}')
+          
+          echo "APK_PATH=$APK_FILE" >> $GITHUB_OUTPUT
+          echo "APK_NAME=$APK_NAME" >> $GITHUB_OUTPUT
+          echo "APK_SIZE=$APK_SIZE" >> $GITHUB_OUTPUT
+          echo "APK_SHA256=$APK_SHA256" >> $GITHUB_OUTPUT
+          
+          echo "=== APK Verification ==="
+          echo "Path: $APK_FILE"
+          echo "Name: $APK_NAME"
+          echo "Size: $APK_SIZE bytes"
+          echo "SHA256: $APK_SHA256"
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: ${{ steps.find_apk.outputs.APK_PATH }}
+          retention-days: 14
+          if-no-files-found: error
