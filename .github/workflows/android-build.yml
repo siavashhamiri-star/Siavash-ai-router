@@ -1,0 +1,148 @@
+name: Build and Release Android (TAVANA AI Router)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android Artifacts & Sign
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Ensure Gradle Wrapper Executable
+        run: |
+          chmod +x ./gradlew || true
+
+      - name: Configure Secrets & Environment (.env)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MYKET_PUBLIC_KEY: ${{ secrets.MYKET_PUBLIC_KEY }}
+          TAVANA_AUTOMATION_API_KEY: ${{ secrets.TAVANA_AUTOMATION_API_KEY }}
+        run: |
+          echo "Writing environment configuration for build..."
+          echo "GEMINI_API_KEY=${GEMINI_API_KEY}" > .env
+          echo "MYKET_PUBLIC_KEY=${MYKET_PUBLIC_KEY}" >> .env
+          echo "TAVANA_AUTOMATION_API_KEY=${TAVANA_AUTOMATION_API_KEY}" >> .env
+
+      - name: Setup Release Keystore
+        id: setup_keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS_VAL: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS_VAL: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$STORE_PASS" ] || [ -z "$KEY_PASS_VAL" ]; then
+            echo "::error::Release signing secrets are missing! Please provide ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD in GitHub Secrets."
+            exit 1
+          fi
+
+          KEYSTORE_FILE="${RUNNER_TEMP}/release.keystore"
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          
+          if [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "::error::Decoded keystore file is empty or invalid!"
+            exit 1
+          fi
+
+          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> $GITHUB_ENV
+          echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_FILE" >> $GITHUB_ENV
+          echo "STORE_PASSWORD=$STORE_PASS" >> $GITHUB_ENV
+          echo "ANDROID_KEYSTORE_PASSWORD=$STORE_PASS" >> $GITHUB_ENV
+          echo "KEY_ALIAS=${KEY_ALIAS_VAL:-upload}" >> $GITHUB_ENV
+          echo "ANDROID_KEY_ALIAS=${KEY_ALIAS_VAL:-upload}" >> $GITHUB_ENV
+          echo "KEY_PASSWORD=$KEY_PASS_VAL" >> $GITHUB_ENV
+          echo "ANDROID_KEY_PASSWORD=$KEY_PASS_VAL" >> $GITHUB_ENV
+          echo "Release keystore initialized securely."
+
+      - name: Build Debug APK
+        run: |
+          echo "=== Building Debug APK ==="
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Build Release APK
+        run: |
+          echo "=== Building Production Signed Release APK ==="
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Build Release AAB (App Bundle for Myket / Play Store)
+        run: |
+          echo "=== Building Production Signed Release AAB Bundle ==="
+          ./gradlew bundleRelease --no-daemon --stacktrace
+
+      - name: Verify Build Artifacts & Integrity
+        run: |
+          echo "=== Verifying Artifact Integrity ==="
+          
+          DEBUG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          RELEASE_AAB=$(find app/build/outputs/bundle/release -name "*.aab" | head -n 1)
+
+          if [ -z "$DEBUG_APK" ] || [ ! -f "$DEBUG_APK" ] || [ ! -s "$DEBUG_APK" ]; then
+            echo "::error::Debug APK was not found or is empty!"
+            exit 1
+          fi
+          echo "✔ Debug APK Verified: $DEBUG_APK ($(ls -lh "$DEBUG_APK" | awk '{print $5}'))"
+
+          if [ -z "$RELEASE_APK" ] || [ ! -f "$RELEASE_APK" ] || [ ! -s "$RELEASE_APK" ]; then
+            echo "::error::Release APK was not found or is empty!"
+            exit 1
+          fi
+          echo "✔ Release APK Verified: $RELEASE_APK ($(ls -lh "$RELEASE_APK" | awk '{print $5}'))"
+
+          if [ -z "$RELEASE_AAB" ] || [ ! -f "$RELEASE_AAB" ] || [ ! -s "$RELEASE_AAB" ]; then
+            echo "::error::Release AAB was not found or is empty!"
+            exit 1
+          fi
+          echo "✔ Release AAB Verified: $RELEASE_AAB ($(ls -lh "$RELEASE_AAB" | awk '{print $5}'))"
+
+          echo "=== SHA-256 Checksums ==="
+          sha256sum "$DEBUG_APK"
+          sha256sum "$RELEASE_APK"
+          sha256sum "$RELEASE_AAB"
+
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tavana-ai-router-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tavana-ai-router-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload Release AAB Bundle Artifact (For Myket / Stores)
+        uses: actions/upload-artifact@v4
+        with:
+          name: tavana-ai-router-release-aab
+          path: app/build/outputs/bundle/release/*.aab
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Clean up Sensitive Temporary Credentials
+        if: always()
+        run: |
+          echo "Cleaning up temporary signing keys and environment tokens..."
+          rm -f "${RUNNER_TEMP}/release.keystore"
+          rm -f .env
+          echo "Cleanup completed securely."
